@@ -10,7 +10,10 @@
 
 @interface SymbolModel : NSObject
 
-@property (nonatomic, copy) NSString *file;//文件
-@property (nonatomic, assign) NSUInteger size;//大小
+@property(nonatomic, copy) NSString *file;    //文件
+@property(nonatomic, assign) NSUInteger size; //大小
+
+@property(nonatomic, copy) NSString *currentFile;    //文件
+@property(nonatomic, assign) NSUInteger currentSize; //大小
 
 @end

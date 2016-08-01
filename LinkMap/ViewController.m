@@ -19,9 +19,14 @@
 @property (unsafe_unretained) IBOutlet NSTextView *contentTextView;
 @property (weak) IBOutlet NSButton *groupButton;
 
+@property (weak) IBOutlet NSTextField *currentFilePathField;//显示选择的文件路径
+
 
 @property (strong) NSURL *linkMapFileURL;
 @property (strong) NSString *linkMapContent;
+
+@property (strong) NSURL *currentLinkMapFileURL;
+@property (strong) NSString *currentLinkMapContent;
 
 @property (strong) NSMutableString *result;//分析的结果
 
@@ -63,6 +68,23 @@
     }];
 }
 
+- (IBAction)chooseCurrentFile:(id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowsMultipleSelection = NO;
+    panel.canChooseDirectories = NO;
+    panel.resolvesAliases = NO;
+    panel.canChooseFiles = YES;
+    
+    [panel beginWithCompletionHandler:^(NSInteger result){
+        if (result == NSFileHandlingPanelOKButton) {
+            NSURL *document = [[panel URLs] objectAtIndex:0];
+            _currentFilePathField.stringValue = document.path;
+            self.currentLinkMapFileURL = document;
+        }
+    }];
+}
+
+
 - (IBAction)analyze:(id)sender {
     if (!_linkMapFileURL || ![[NSFileManager defaultManager] fileExistsAtPath:[_linkMapFileURL path] isDirectory:nil]) {
         [self showAlertWithText:@"请选择正确的Link Map文件路径"];
@@ -72,6 +94,8 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *content = [NSString stringWithContentsOfURL:_linkMapFileURL encoding:NSMacOSRomanStringEncoding error:nil];
         
+        NSString *currentContent = [NSString stringWithContentsOfURL:_currentLinkMapFileURL encoding:NSMacOSRomanStringEncoding error:nil];
+
         if (![self checkContent:content]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showAlertWithText:@"Link Map文件格式有误"];
@@ -87,10 +111,29 @@
         
         NSDictionary *symbolMap = [self symbolMapFromContent:content];
         
+        if ([self checkContent:currentContent]) {
+            NSDictionary *currentSymbolMap = [self symbolMapFromContent:currentContent];
+
+            NSMutableDictionary* mutablesymbolMap = [symbolMap mutableCopy];
+            for (NSString* key in currentSymbolMap) {
+                SymbolModel *symbol = mutablesymbolMap[key];
+                SymbolModel *currentsymbol = currentSymbolMap[key];
+
+                if (symbol) {
+                    symbol.currentFile = currentsymbol.file;
+                    symbol.currentSize = currentsymbol.size;
+                }else{
+                    currentsymbol.currentSize = currentsymbol.size;
+                    currentsymbol.size = 0;
+                    mutablesymbolMap[key] = currentsymbol;
+                }
+            }
+            symbolMap = mutablesymbolMap;
+        }
+        
         NSArray <SymbolModel *>*symbols = [symbolMap allValues];
-        
         NSArray *sortedSymbols = [self sortSymbols:symbols];
-        
+
         if (_groupButton.state == 1) {
             [self buildCombinationResultWithSymbols:sortedSymbols];
         } else {
@@ -150,14 +193,22 @@
             }
         }
     }
-    return symbolMap;
+    
+    NSMutableDictionary <NSString *,SymbolModel *>*newsymbolMap = [NSMutableDictionary new];
+    for (NSString *key in symbolMap) {
+        SymbolModel* value = symbolMap[key];
+        newsymbolMap[value.file] = value;
+    }
+    return newsymbolMap;
 }
 
 - (NSArray *)sortSymbols:(NSArray *)symbols {
     NSArray *sortedSymbols = [symbols sortedArrayUsingComparator:^NSComparisonResult(SymbolModel *  _Nonnull obj1, SymbolModel *  _Nonnull obj2) {
-        if(obj1.size > obj2.size) {
+        NSInteger size1 = obj1.currentSize - obj1.size;
+        NSInteger size2 = obj2.currentSize - obj2.size;
+        if(size1 > size2) {
             return NSOrderedAscending;
-        } else if (obj1.size < obj2.size) {
+        } else if(size1 < size2) {
             return NSOrderedDescending;
         } else {
             return NSOrderedSame;
@@ -167,10 +218,11 @@
     return sortedSymbols;
 }
 
-- (void)buildResultWithSymbols:(NSArray *)symbols {
-    self.result = [@"文件大小\t文件名称\r\n\r\n" mutableCopy];
+- (void)buildResultWithSymbols:(NSArray *)symbols{
+    self.result = [@"文件名称\t前一版本文件大小\t当前文件大小\t差值\r\n\r\n" mutableCopy];
     NSUInteger totalSize = 0;
-    
+    NSUInteger totalCurrentSize = 0;
+
     NSString *searchKey = _searchField.stringValue;
     
     for(SymbolModel *symbol in symbols) {
@@ -178,20 +230,21 @@
             if ([symbol.file containsString:searchKey]) {
                 [self appendResultWithSymbol:symbol];
                 totalSize += symbol.size;
+                totalCurrentSize += symbol.currentSize;
             }
         } else {
             [self appendResultWithSymbol:symbol];
             totalSize += symbol.size;
+            totalCurrentSize += symbol.currentSize;
         }
     }
     
-    [_result appendFormat:@"\r\n总大小: %.2fM\r\n",(totalSize/1024.0/1024.0)];
+    [_result appendFormat:@"\r\n总大小: %.2fM 当前总大小: %.2fM 差值：%.2d\r\n",(totalSize/1024.0/1024.0), (totalCurrentSize/1024.0/1024.0), (int)(totalCurrentSize - totalSize)];
 }
 
 
 - (void)buildCombinationResultWithSymbols:(NSArray *)symbols {
     self.result = [@"库大小\t库名称\r\n\r\n" mutableCopy];
-    NSUInteger totalSize = 0;
     
     NSMutableDictionary *combinationMap = [[NSMutableDictionary alloc] init];
     
@@ -209,6 +262,7 @@
             }
             
             combinationSymbol.size += symbol.size;
+            combinationSymbol.currentSize += symbol.currentSize;
             combinationSymbol.file = component;
         } else {
             // symbol可能来自app本身的目标文件或者系统的动态库，在最后的结果中一起显示
@@ -216,25 +270,31 @@
         }
     }
     
+    
     NSArray <SymbolModel *>*combinationSymbols = [combinationMap allValues];
     
     NSArray *sortedSymbols = [self sortSymbols:combinationSymbols];
     
     NSString *searchKey = _searchField.stringValue;
     
+    NSUInteger totalSize = 0;
+    NSUInteger totalCurrentSize = 0;
+
     for(SymbolModel *symbol in sortedSymbols) {
         if (searchKey.length > 0) {
             if ([symbol.file containsString:searchKey]) {
                 [self appendResultWithSymbol:symbol];
                 totalSize += symbol.size;
+                totalCurrentSize += symbol.currentSize;
             }
         } else {
             [self appendResultWithSymbol:symbol];
             totalSize += symbol.size;
+            totalCurrentSize += symbol.currentSize;
         }
     }
     
-    [_result appendFormat:@"\r\n总大小: %.2fM\r\n",(totalSize/1024.0/1024.0)];
+    [_result appendFormat:@"\r\n总大小: %.2fM 当前总大小: %.2fM 差值：%.2d\r\n",(totalSize/1024.0/1024.0), (totalCurrentSize/1024.0/1024.0), (int)(totalCurrentSize - totalSize)];
 }
 
 - (IBAction)ouputFile:(id)sender {
@@ -256,13 +316,7 @@
 }
 
 - (void)appendResultWithSymbol:(SymbolModel *)model {
-    NSString *size = nil;
-    if (model.size / 1024.0 / 1024.0 > 1) {
-        size = [NSString stringWithFormat:@"%.2fM", model.size / 1024.0 / 1024.0];
-    } else {
-        size = [NSString stringWithFormat:@"%.2fK", model.size / 1024.0];
-    }
-    [_result appendFormat:@"%@\t%@\r\n",size, [[model.file componentsSeparatedByString:@"/"] lastObject]];
+    [_result appendFormat:@"%@\t%@\t%@\t%d\r\n",[[model.file componentsSeparatedByString:@"/"] lastObject], @(model.size), @(model.currentSize),(int)(model.currentSize - model.size)];
 }
 
 - (BOOL)checkContent:(NSString *)content {
