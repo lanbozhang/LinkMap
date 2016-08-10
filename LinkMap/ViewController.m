@@ -111,11 +111,17 @@
         
         NSDictionary *symbolMap = [self symbolMapFromContent:content];
         
+        NSString *searchKey = _searchField.stringValue;
         if ([self checkContent:currentContent]) {
             NSDictionary *currentSymbolMap = [self symbolMapFromContent:currentContent];
 
             NSMutableDictionary* mutablesymbolMap = [symbolMap mutableCopy];
             for (NSString* key in currentSymbolMap) {
+                if (searchKey.length > 0) {
+                    if (![key containsString:searchKey]) {
+                        continue;
+                    }
+                }
                 SymbolModel *symbol = mutablesymbolMap[key];
                 SymbolModel *currentsymbol = currentSymbolMap[key];
 
@@ -171,7 +177,8 @@
                 NSRange range = [line rangeOfString:@"]"];
                 if(range.location != NSNotFound) {
                     SymbolModel *symbol = [SymbolModel new];
-                    symbol.file = [line substringFromIndex:range.location+1];
+                
+                    symbol.file =  [[[line substringFromIndex:range.location+1] componentsSeparatedByString:@"/"] lastObject];
                     NSString *key = [line substringToIndex:range.location+1];
                     symbolMap[key] = symbol;
                 }
